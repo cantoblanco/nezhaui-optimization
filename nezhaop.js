@@ -19,8 +19,8 @@
   };
 
   // ===== 自定义全局开关（为其他脚本提供）=====
-  window.ShowNetTransfer = false;     // 是否展示网络传输
-  window.DisableAnimatedMan = true;    // 关闭动画人物
+  window.ShowNetTransfer = true;     // 是否展示网络传输
+  window.DisableAnimatedMan = false;    // 关闭动画人物
   window.ForceUseSvgFlag = true;       // 强制使用 SVG
 
   // ===== 工具函数 =====
@@ -638,5 +638,6 @@ const domObserver = (() => {
     trafficRenderer.stopToggleCycle();
   });
 })();
+
 
 
