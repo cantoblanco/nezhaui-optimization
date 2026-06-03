@@ -5,16 +5,15 @@
   // ===== 配置区（尽量集中修改）=====
   const SEL = {
     root: '#root',
-    button: '#root > div > main > div.mx-auto.w-full.max-w-5xl.px-0.flex.flex-col.gap-4.server-info > section > div.flex.justify-center.w-full.max-w-\\[200px\\] > div > div > div.relative.cursor-pointer.rounded-3xl.px-2\\.5.py-\\[8px\\].text-\\[13px\\].font-\\[600\\].transition-all.duration-500.text-stone-400.dark\\:text-stone-500',
-    section: '#root > div > main > div.mx-auto.w-full.max-w-5xl.px-0.flex.flex-col.gap-4.server-info > section',
-    div3:    '#root > div > main > div.mx-auto.w-full.max-w-5xl.px-0.flex.flex-col.gap-4.server-info > div:nth-child(3)',
-    div4:    '#root > div > main > div.mx-auto.w-full.max-w-5xl.px-0.flex.flex-col.gap-4.server-info > div:nth-child(4)',
+    info: '.server-info',
+    tabWrap: '.server-info-tab',
+    section: '.server-info > section',
     h3hide:  'h3.font-semibold.tracking-tight',
-    // 进度条区域：保持与现状一致；如后续 DOM 变更，优先考虑给容器加 data-* 再改这里
-    progressBar: '.bg-emerald-500',
+    // 只处理脚本插入的周期流量进度条，避免误伤前端自带组件
+    progressBar: '.new-inserted-element .progress-bar',
     // 在父卡片内查找服务器名/百分比
     cardName:   '.text-sm.font-medium.text-neutral-800',
-    cardPercent:'.text-xs.font-medium.text-neutral-600',
+    cardPercent:'.percentage-value, .text-xs.font-medium.text-neutral-600',
     cardRoot:   '.w-full'
   };
 
@@ -41,14 +40,27 @@
 
   // ===== 状态 =====
   let hasClicked = false;
+  let clickedInfo = null;
   let anyDivVisible = false;
 
   // ===== DOM 操作 =====
+  function getServerInfoPanels() {
+    const info = qs(SEL.info);
+    if (!info) return [];
+    return Array.from(info.children).filter(el => el.tagName === 'DIV');
+  }
+
+  function getNetworkTab() {
+    const wrap = qs(SEL.tabWrap);
+    if (!wrap) return null;
+    const tabs = qsa('[class*="cursor-pointer"]', wrap);
+    return tabs.find(el => /Network|网络/i.test(el.textContent || '')) || tabs[1] || null;
+  }
+
   function forceBothVisible() {
-    const d3 = qs(SEL.div3);
-    const d4 = qs(SEL.div4);
-    if (d3) d3.style.display = 'block';
-    if (d4) d4.style.display = 'block';
+    getServerInfoPanels().forEach(panel => {
+      panel.style.display = 'block';
+    });
   }
 
   function hideSection() {
@@ -56,17 +68,21 @@
     if (section) section.style.display = 'none';
   }
 
-  function tryClickButton() {
-    const btn = qs(SEL.button);
-    if (btn && !hasClicked) {
-      btn.click();
+  function tryClickNetworkTab() {
+    const info = qs(SEL.info);
+    const tab = getNetworkTab();
+    if (tab && info && (!hasClicked || clickedInfo !== info)) {
+      tab.click();
       hasClicked = true;
+      clickedInfo = info;
       setTimeout(forceBothVisible, 500);
     }
   }
 
   const hideDynamicH3 = () => {
-    qsa(SEL.h3hide).forEach(el => {
+    const info = qs(SEL.info);
+    if (!info) return;
+    qsa(SEL.h3hide, info).forEach(el => {
       if (el.textContent.trim() !== '') el.style.display = 'none';
     });
   };
@@ -119,22 +135,20 @@
 
   // ===== 观察器（带节流）=====
   const onMutate = rafThrottle(() => {
-    const d3 = qs(SEL.div3);
-    const d4 = qs(SEL.div4);
+    const panels = getServerInfoPanels();
 
-    const v3 = isVisible(d3);
-    const v4 = isVisible(d4);
-    const nowAnyVisible = v3 || v4;
+    const nowAnyVisible = panels.some(isVisible);
 
     if (nowAnyVisible && !anyDivVisible) {
       hideSection();
-      tryClickButton();
+      tryClickNetworkTab();
     } else if (!nowAnyVisible && anyDivVisible) {
       hasClicked = false; // 允许下次再点一次
+      clickedInfo = null;
     }
     anyDivVisible = nowAnyVisible;
 
-    if (d3 && d4 && (!v3 || !v4)) {
+    if (panels.length && !panels.every(isVisible)) {
       forceBothVisible();
     }
 
@@ -157,8 +171,9 @@
   // ===== 初始化 =====
   function init() {
     // 首次执行一次，避免 observer 未触发时状态不一致
-    forceBothVisible();
     hideSection();
+    tryClickNetworkTab();
+    setTimeout(forceBothVisible, 300);
     hideDynamicH3();
     updateTrafficProgressColors();
 
@@ -282,13 +297,21 @@ const utils = (() => {
     }, duration / 2);
   }
 
+  function pickCycleValue(value, serverId) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value[serverId];
+    }
+    return value;
+  }
+
   return {
     formatFileSize,
     calculatePercentage,
     formatDate,
     safeSetTextContent,
     getHslGradientColor,
-    fadeOutIn
+    fadeOutIn,
+    pickCycleValue
   };
 })();
 
@@ -307,10 +330,10 @@ const trafficRenderer = (() => {
       for (const serverId in cycle.server_name) {
         const serverName = cycle.server_name[serverId];
         const transfer = cycle.transfer[serverId];
-        const max = cycle.max;
-        const from = cycle.from;
-        const to = cycle.to;
-        const next_update = cycle.next_update ? cycle.next_update[serverId] : undefined;
+        const max = utils.pickCycleValue(cycle.max, serverId);
+        const from = utils.pickCycleValue(cycle.from, serverId);
+        const to = utils.pickCycleValue(cycle.to, serverId);
+        const next_update = utils.pickCycleValue(cycle.next_update, serverId);
 
         if (serverName && transfer !== undefined && max && from && to) {
           serverMap.set(serverName, {
