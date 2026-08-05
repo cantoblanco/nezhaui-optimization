@@ -20,7 +20,8 @@ test('current parent waits for embedded Detail readiness before selecting Networ
   await dashboard.settle();
 
   assert.equal(dashboard.getNetworkClicks(), 1);
-  assert.equal(dashboard.document.querySelector('.server-charts').dataset.view, 'network');
+  assert.ok(dashboard.document.querySelector('.network-panel'));
+  assert.equal(dashboard.document.querySelector('.server-charts'), null);
   assert.equal(dashboard.document.querySelector('.tabs-section').style.display, 'none');
   assert.equal(frame.hidden, false);
   assert.equal(frame.style.height, '640px');
@@ -39,9 +40,10 @@ test('embedded detail marker prevents recursion, hides chrome, and reports readi
 
   assert.equal(dashboard.document.querySelectorAll('iframe[data-nezhaop-detail-frame]').length, 0);
   assert.equal(dashboard.getNetworkClicks(), 0, 'the child remains on the default Detail view');
-  for (const selector of ['header', '.server-name', '.server-info-tab', 'footer']) {
+  for (const selector of ['.app-header-root', '.overview-root', '.server-info-tab', 'footer']) {
     assert.equal(dashboard.document.querySelector(selector).style.display, 'none', `${selector} is hidden`);
   }
+  assert.notEqual(dashboard.document.querySelector('.detail-panel').style.display, 'none');
   assert.ok(messages.some(message => message.type === 'nezhaop:detail-ready'));
 
   const messageCount = messages.length;
@@ -133,6 +135,8 @@ test('client-side route changes remove stale frames and initialize the new serve
   assert.match(secondFrame.src, /\/server\/2/);
   assert.equal(new URL(secondFrame.src).searchParams.get('nezhaop_view'), 'detail');
   assert.notEqual(dashboard.document.querySelector('.tabs-section').style.display, 'none');
+  assert.equal(secondFrame.hidden, true, 'the new route waits for its own child Detail readiness');
+  assert.equal(dashboard.getNetworkClicks(), 1, 'the new route is not switched before child readiness');
 
   dashboard.window.history.pushState({}, '', '/');
   await dashboard.settle();

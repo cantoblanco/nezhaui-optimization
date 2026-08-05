@@ -64,12 +64,11 @@
     return wrap && (wrap.closest('section') || wrap);
   }
 
-  function getLegacyPanels(info, charts) {
-    return Array.from(new Set(charts.map(chart => {
-      let panel = chart;
-      while (panel.parentElement && panel.parentElement !== info) panel = panel.parentElement;
-      return panel.parentElement === info ? panel : chart;
-    })));
+  function getContentWrappers(info) {
+    const tabSection = getTabSection(info);
+    if (!tabSection || tabSection.parentElement !== info) return [];
+    const children = Array.from(info.children);
+    return children.slice(children.indexOf(tabSection) + 1);
   }
 
   function revealLegacyPanels(state) {
@@ -78,8 +77,7 @@
     });
   }
 
-  function initializeLegacy(info, charts) {
-    const panels = getLegacyPanels(info, charts);
+  function initializeLegacy(info, panels) {
     const state = {
       mode: 'legacy',
       routeKey: runtime.routeKey,
@@ -123,7 +121,16 @@
   }
 
   function hideEmbeddedChrome(state) {
-    document.querySelectorAll('header, footer, .server-name').forEach(element => rememberAndHide(state, element));
+    document.querySelectorAll('header, footer').forEach(element => rememberAndHide(state, element));
+    const headerTop = document.querySelector('.header-top');
+    rememberAndHide(state, headerTop && headerTop.parentElement);
+
+    const info = document.querySelector('.server-info');
+    const serverName = info && info.querySelector('.server-name');
+    let overview = serverName;
+    while (overview && overview.parentElement !== info) overview = overview.parentElement;
+    rememberAndHide(state, overview);
+
     document.querySelectorAll('.server-info-tab').forEach(element => {
       rememberAndHide(state, element);
       rememberAndHide(state, element.closest('section'));
@@ -157,13 +164,16 @@
     runtime.detail = state;
     document.documentElement.dataset.nezhaopView = DETAIL_VALUE;
     hideEmbeddedChrome(state);
-    if (document.querySelector('.server-charts')) {
-      if (typeof ResizeObserver === 'function') {
-        state.resizeObserver = new ResizeObserver(reportEmbeddedReady);
-        state.resizeObserver.observe(document.documentElement);
-      }
-      reportEmbeddedReady();
+    ensureEmbeddedReady(state);
+  }
+
+  function ensureEmbeddedReady(state) {
+    if (!document.querySelector('.server-charts')) return;
+    if (!state.resizeObserver && typeof ResizeObserver === 'function') {
+      state.resizeObserver = new ResizeObserver(reportEmbeddedReady);
+      state.resizeObserver.observe(document.documentElement);
     }
+    reportEmbeddedReady();
   }
 
   function cleanupDetail() {
@@ -198,15 +208,15 @@
 
     const info = document.querySelector('.server-info');
     if (!info) return;
-    const charts = Array.from(info.querySelectorAll('.server-charts'));
-    if (!charts.length) return;
+    const contentWrappers = getContentWrappers(info);
+    if (!contentWrappers.length) return;
 
     const state = runtime.detail;
     if (state && state.routeKey === runtime.routeKey) {
       if (state.mode === 'legacy') revealLegacyPanels(state);
       if (state.mode === 'embedded') {
         hideEmbeddedChrome(state);
-        reportEmbeddedReady();
+        ensureEmbeddedReady(state);
       }
       if (state.mode === 'parent' && state.ready) {
         if (state.info !== info) {
@@ -219,7 +229,7 @@
     }
 
     if (isEmbeddedDetail()) initializeEmbedded();
-    else if (charts.length >= 2) initializeLegacy(info, charts);
+    else if (contentWrappers.length >= 2) initializeLegacy(info, contentWrappers);
     else initializeParent(info);
   }
 
@@ -808,6 +818,3 @@ const domObserver = (() => {
   runtime.stop = stopRuntime;
   window.addEventListener('beforeunload', stopRuntime, { once: true });
 })();
-
-
-

@@ -7,19 +7,25 @@ const scriptSource = fs.readFileSync(path.join(__dirname, '..', '..', 'nezhaop.j
 function detailPage({ legacy = false } = {}) {
   const charts = legacy
     ? `
-      <div class="detail-panel"><div class="server-charts" data-view="detail">detail chart</div></div>
-      <div class="network-panel" style="display:none"><div class="server-charts" data-view="network">network chart</div></div>`
-    : '<div class="server-charts" data-view="detail">detail chart</div>';
+      <div class="detail-panel"><section class="server-charts" data-view="detail">detail chart</section></div>
+      <div class="network-panel" style="display:none">network chart</div>`
+    : '<section class="detail-panel"><section class="server-charts" data-view="detail">detail chart</section></section>';
 
   return `<!doctype html>
     <html>
       <head></head>
       <body>
-        <header>dashboard header</header>
         <div id="root">
           <main>
-            <div class="server-name">server one overview</div>
+            <div class="app-header-root">
+              <section class="header-top">dashboard header</section>
+              <section class="header-timer">dashboard timer</section>
+            </div>
             <div class="server-info">
+              <div class="overview-root">
+                <div class="server-name">server one</div>
+                <section class="overview-metrics">status and metrics</section>
+              </div>
               <section class="tabs-section">
                 <div class="server-info-tab">
                   <button class="cursor-pointer" data-tab="detail">Detail</button>
@@ -90,11 +96,10 @@ function createDashboard(options = {}) {
     if (legacy) return;
     const charts = window.document.querySelector('.server-charts');
     if (charts) {
-      const networkCharts = window.document.createElement('div');
-      networkCharts.className = 'server-charts';
-      networkCharts.dataset.view = 'network';
-      networkCharts.textContent = 'network chart';
-      charts.replaceWith(networkCharts);
+      const networkRoot = window.document.createElement('div');
+      networkRoot.className = 'network-panel';
+      networkRoot.textContent = 'network chart';
+      charts.closest('.detail-panel').replaceWith(networkRoot);
     }
   });
 
