@@ -2,94 +2,259 @@
 (() => {
   'use strict';
 
-  // ===== 配置区（尽量集中修改）=====
-  const SEL = {
-    root: '#root',
-    info: '.server-info',
-    tabWrap: '.server-info-tab',
-    section: '.server-info > section',
-    h3hide:  'h3.font-semibold.tracking-tight',
-    // 只处理脚本插入的周期流量进度条，避免误伤前端自带组件
-    progressBar: '.new-inserted-element .progress-bar',
-    // 在父卡片内查找服务器名/百分比
-    cardName:   '.text-sm.font-medium.text-neutral-800',
-    cardPercent:'.percentage-value, .text-xs.font-medium.text-neutral-600',
-    cardRoot:   '.w-full'
+  const RUNTIME_KEY = '__NEZHAOP_RUNTIME__';
+  const existingRuntime = window[RUNTIME_KEY];
+  if (existingRuntime) {
+    existingRuntime.rescan();
+    return;
+  }
+
+  const DETAIL_PARAM = 'nezhaop_view';
+  const DETAIL_VALUE = 'detail';
+  const DETAIL_MESSAGE = 'nezhaop:detail-ready';
+  const runtime = {
+    routeKey: '',
+    detail: null,
+    scanPending: false,
+    stopped: false,
+    rescan: scheduleDetailScan
   };
+  window[RUNTIME_KEY] = runtime;
+  document.documentElement.dataset.nezhaopRuntime = 'active';
 
   // ===== 自定义全局开关（为其他脚本提供）=====
-  window.ShowNetTransfer = true;     // 是否展示网络传输
-  window.DisableAnimatedMan = false;    // 关闭动画人物
-  window.ForceUseSvgFlag = true;       // 强制使用 SVG
+  window.ShowNetTransfer = true;
+  window.DisableAnimatedMan = false;
+  window.ForceUseSvgFlag = true;
 
-  // ===== 工具函数 =====
-  const qs  = (s, r=document) => r.querySelector(s);
-  const qsa = (s, r=document) => Array.from(r.querySelectorAll(s));
-  const isVisible = (el) => !!el && getComputedStyle(el).display !== 'none';
-  const rafThrottle = (fn) => {
-    let scheduled = false;
-    return (...args) => {
-      if (scheduled) return;
-      scheduled = true;
-      requestAnimationFrame(() => {
-        scheduled = false;
-        fn(...args);
-      });
-    };
-  };
-
-  // ===== 状态 =====
-  let hasClicked = false;
-  let clickedInfo = null;
-  let anyDivVisible = false;
-
-  // ===== DOM 操作 =====
-  function getServerInfoPanels() {
-    const info = qs(SEL.info);
-    if (!info) return [];
-    return Array.from(info.children).filter(el => el.tagName === 'DIV');
+  function isServerDetailRoute() {
+    return /^\/server\/[^/]+\/?$/.test(window.location.pathname);
   }
 
-  function getNetworkTab() {
-    const wrap = qs(SEL.tabWrap);
+  function isEmbeddedDetail() {
+    return new URLSearchParams(window.location.search).get(DETAIL_PARAM) === DETAIL_VALUE;
+  }
+
+  function getRouteKey() {
+    return window.location.pathname + window.location.search;
+  }
+
+  function rememberAndHide(state, element) {
+    if (!element || state.hidden.some(item => item.element === element)) return;
+    state.hidden.push({ element, display: element.style.display });
+    element.style.display = 'none';
+  }
+
+  function restoreHidden(state) {
+    state.hidden.forEach(({ element, display }) => {
+      if (element.isConnected) element.style.display = display;
+    });
+    state.hidden.length = 0;
+  }
+
+  function findNetworkTab(info) {
+    const wrap = info && info.querySelector('.server-info-tab');
     if (!wrap) return null;
-    const tabs = qsa('[class*="cursor-pointer"]', wrap);
-    return tabs.find(el => /Network|网络/i.test(el.textContent || '')) || tabs[1] || null;
+    const tabs = Array.from(wrap.querySelectorAll('button, [role="tab"], [class*="cursor-pointer"]'));
+    return tabs.find(tab => /Network|网络/i.test(tab.textContent || '')) || tabs[1] || null;
   }
 
-  function forceBothVisible() {
-    getServerInfoPanels().forEach(panel => {
+  function getTabSection(info) {
+    const wrap = info && info.querySelector('.server-info-tab');
+    return wrap && (wrap.closest('section') || wrap);
+  }
+
+  function getLegacyPanels(info, charts) {
+    return Array.from(new Set(charts.map(chart => {
+      let panel = chart;
+      while (panel.parentElement && panel.parentElement !== info) panel = panel.parentElement;
+      return panel.parentElement === info ? panel : chart;
+    })));
+  }
+
+  function revealLegacyPanels(state) {
+    state.panels.forEach(panel => {
       panel.style.display = 'block';
     });
   }
 
-  function hideSection() {
-    const section = qs(SEL.section);
-    if (section) section.style.display = 'none';
+  function initializeLegacy(info, charts) {
+    const panels = getLegacyPanels(info, charts);
+    const state = {
+      mode: 'legacy',
+      routeKey: runtime.routeKey,
+      info,
+      hidden: [],
+      panels,
+      panelDisplays: panels.map(panel => ({ panel, display: panel.style.display }))
+    };
+    runtime.detail = state;
+    rememberAndHide(state, getTabSection(info));
+    const tab = findNetworkTab(info);
+    if (tab) tab.click();
+    revealLegacyPanels(state);
   }
 
-  function tryClickNetworkTab() {
-    const info = qs(SEL.info);
-    const tab = getNetworkTab();
-    if (tab && info && (!hasClicked || clickedInfo !== info)) {
-      tab.click();
-      hasClicked = true;
-      clickedInfo = info;
-      setTimeout(forceBothVisible, 500);
+  function createDetailFrame(info) {
+    const frameUrl = new URL(window.location.href);
+    frameUrl.searchParams.set(DETAIL_PARAM, DETAIL_VALUE);
+    const frame = document.createElement('iframe');
+    frame.dataset.nezhaopDetailFrame = '1';
+    frame.title = 'Server detail charts';
+    frame.src = frameUrl.href;
+    frame.hidden = true;
+    frame.style.width = '100%';
+    frame.style.border = '0';
+    frame.style.overflow = 'hidden';
+    info.insertAdjacentElement('afterend', frame);
+    return frame;
+  }
+
+  function initializeParent(info) {
+    runtime.detail = {
+      mode: 'parent',
+      routeKey: runtime.routeKey,
+      info,
+      frame: createDetailFrame(info),
+      hidden: [],
+      ready: false,
+      clicked: false
+    };
+  }
+
+  function hideEmbeddedChrome(state) {
+    document.querySelectorAll('header, footer, .server-name').forEach(element => rememberAndHide(state, element));
+    document.querySelectorAll('.server-info-tab').forEach(element => {
+      rememberAndHide(state, element);
+      rememberAndHide(state, element.closest('section'));
+    });
+  }
+
+  function measureDetailHeight() {
+    const root = document.documentElement;
+    const body = document.body;
+    const info = document.querySelector('.server-info');
+    const charts = document.querySelector('.server-charts');
+    return Math.max(
+      root ? root.scrollHeight : 0,
+      body ? body.scrollHeight : 0,
+      info ? info.scrollHeight : 0,
+      charts ? Math.ceil(charts.getBoundingClientRect().bottom) : 0,
+      1
+    );
+  }
+
+  function reportEmbeddedReady() {
+    window.parent.postMessage({ type: DETAIL_MESSAGE, height: measureDetailHeight() }, window.location.origin);
+  }
+
+  function initializeEmbedded() {
+    const state = {
+      mode: 'embedded',
+      routeKey: runtime.routeKey,
+      hidden: []
+    };
+    runtime.detail = state;
+    document.documentElement.dataset.nezhaopView = DETAIL_VALUE;
+    hideEmbeddedChrome(state);
+    if (document.querySelector('.server-charts')) {
+      if (typeof ResizeObserver === 'function') {
+        state.resizeObserver = new ResizeObserver(reportEmbeddedReady);
+        state.resizeObserver.observe(document.documentElement);
+      }
+      reportEmbeddedReady();
     }
   }
 
-  const hideDynamicH3 = () => {
-    const info = qs(SEL.info);
-    if (!info) return;
-    qsa(SEL.h3hide, info).forEach(el => {
-      if (el.textContent.trim() !== '') el.style.display = 'none';
-    });
-  };
+  function cleanupDetail() {
+    const state = runtime.detail;
+    if (!state) return;
+    restoreHidden(state);
+    if (state.panelDisplays) {
+      state.panelDisplays.forEach(({ panel, display }) => {
+        if (panel.isConnected) panel.style.display = display;
+      });
+    }
+    if (state.resizeObserver) state.resizeObserver.disconnect();
+    if (state.frame) state.frame.remove();
+    delete document.documentElement.dataset.nezhaopView;
+    runtime.detail = null;
+  }
 
-  // ===== 进度条颜色逻辑（基于类覆盖而非内联样式）=====
+  function scanDetailPage() {
+    runtime.scanPending = false;
+    if (runtime.stopped) return;
+
+    const nextRoute = getRouteKey();
+    if (nextRoute !== runtime.routeKey) {
+      cleanupDetail();
+      runtime.routeKey = nextRoute;
+    }
+
+    if (!isServerDetailRoute()) {
+      cleanupDetail();
+      return;
+    }
+
+    const info = document.querySelector('.server-info');
+    if (!info) return;
+    const charts = Array.from(info.querySelectorAll('.server-charts'));
+    if (!charts.length) return;
+
+    const state = runtime.detail;
+    if (state && state.routeKey === runtime.routeKey) {
+      if (state.mode === 'legacy') revealLegacyPanels(state);
+      if (state.mode === 'embedded') {
+        hideEmbeddedChrome(state);
+        reportEmbeddedReady();
+      }
+      if (state.mode === 'parent' && state.ready) {
+        if (state.info !== info) {
+          state.info = info;
+          state.clicked = false;
+        }
+        activateParent(state);
+      }
+      return;
+    }
+
+    if (isEmbeddedDetail()) initializeEmbedded();
+    else if (charts.length >= 2) initializeLegacy(info, charts);
+    else initializeParent(info);
+  }
+
+  function scheduleDetailScan() {
+    if (runtime.stopped || runtime.scanPending) return;
+    runtime.scanPending = true;
+    Promise.resolve().then(scanDetailPage);
+  }
+
+  function onDetailMessage(event) {
+    const state = runtime.detail;
+    if (!state || state.mode !== 'parent' || event.origin !== window.location.origin) return;
+    if (event.source !== state.frame.contentWindow || !event.data || event.data.type !== DETAIL_MESSAGE) return;
+    const height = Math.max(1, Number(event.data.height) || 1);
+    state.frame.style.height = Math.ceil(height) + 'px';
+    state.ready = true;
+    activateParent(state);
+  }
+
+  function activateParent(state) {
+    const networkTab = findNetworkTab(state.info);
+    if (!networkTab) return;
+    rememberAndHide(state, getTabSection(state.info));
+    if (!state.clicked) {
+      state.clicked = true;
+      networkTab.click();
+    }
+    state.frame.hidden = false;
+  }
+
+  let decorationFrame = null;
+  const decorationTimers = [];
+
   function ensureTrafficStyles() {
-    if (qs('#traffic-progress-style')) return;
+    if (document.querySelector('#traffic-progress-style')) return;
     const style = document.createElement('style');
     style.id = 'traffic-progress-style';
     style.textContent = `
@@ -101,95 +266,59 @@
     document.head.appendChild(style);
   }
 
-  function setBarClass(bar, cls) {
-    bar.classList.remove('traffic-progress-normal','traffic-progress-warning','traffic-progress-danger','traffic-progress-critical');
-    bar.classList.add(cls);
-  }
-
-  function parsePercentFromCard(card) {
-    // 优先从特定元素读取；找不到则在卡片文本内兜底匹配
-    const el = qs(SEL.cardPercent, card);
-    let text = el ? el.textContent : card.textContent;
-    const m = text && text.match(/(\d+(?:\.\d+)?)%/);
-    return m ? parseFloat(m[1]) : NaN;
-  }
-
-  function updateTrafficProgressColors() {
+  function refreshDecorations() {
+    decorationFrame = null;
+    document.querySelectorAll('.server-info h3.font-semibold.tracking-tight').forEach(element => {
+      if (element.textContent.trim()) element.style.display = 'none';
+    });
     ensureTrafficStyles();
-    const bars = qsa(SEL.progressBar);
-    bars.forEach(bar => {
-      // 找最近的父卡片
-      const card = bar.closest(SEL.cardRoot) || bar.parentElement;
+    document.querySelectorAll('.new-inserted-element .progress-bar').forEach(bar => {
+      const card = bar.closest('.w-full') || bar.parentElement;
       if (!card) return;
-      const pct = parsePercentFromCard(card);
-      if (isNaN(pct)) return;
-
-      if (pct >= 100)      setBarClass(bar, 'traffic-progress-critical'); // 灰
-      else if (pct >= 90)  setBarClass(bar, 'traffic-progress-danger');   // 红
-      else if (pct >= 70)  setBarClass(bar, 'traffic-progress-warning');  // 黄
-      else                 setBarClass(bar, 'traffic-progress-normal');   // 绿
+      const percentageElement = card.querySelector('.percentage-value, .text-xs.font-medium.text-neutral-600');
+      const match = (percentageElement ? percentageElement.textContent : card.textContent).match(/(\d+(?:\.\d+)?)%/);
+      if (!match) return;
+      const percentage = Number(match[1]);
+      bar.classList.remove('traffic-progress-normal', 'traffic-progress-warning', 'traffic-progress-danger', 'traffic-progress-critical');
+      if (percentage >= 100) bar.classList.add('traffic-progress-critical');
+      else if (percentage >= 90) bar.classList.add('traffic-progress-danger');
+      else if (percentage >= 70) bar.classList.add('traffic-progress-warning');
+      else bar.classList.add('traffic-progress-normal');
     });
   }
 
-  const scheduleUpdateTraffic = rafThrottle(updateTrafficProgressColors);
+  function scheduleDecorations() {
+    if (decorationFrame !== null) return;
+    decorationFrame = requestAnimationFrame(refreshDecorations);
+  }
 
-  // ===== 观察器（带节流）=====
-  const onMutate = rafThrottle(() => {
-    const panels = getServerInfoPanels();
+  const detailObserver = new MutationObserver(() => {
+    scheduleDetailScan();
+    scheduleDecorations();
+  });
+  detailObserver.observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener('message', onDetailMessage);
+  window.addEventListener('popstate', scheduleDetailScan);
 
-    const nowAnyVisible = panels.some(isVisible);
-
-    if (nowAnyVisible && !anyDivVisible) {
-      hideSection();
-      tryClickNetworkTab();
-    } else if (!nowAnyVisible && anyDivVisible) {
-      hasClicked = false; // 允许下次再点一次
-      clickedInfo = null;
-    }
-    anyDivVisible = nowAnyVisible;
-
-    if (panels.length && !panels.every(isVisible)) {
-      forceBothVisible();
-    }
-
-    hideDynamicH3();
-    scheduleUpdateTraffic();
+  const originalHistoryMethods = {};
+  ['pushState', 'replaceState'].forEach(method => {
+    const original = history[method];
+    originalHistoryMethods[method] = original;
+    history[method] = function(...args) {
+      const result = original.apply(this, args);
+      scheduleDetailScan();
+      return result;
+    };
   });
 
-  function attachObserver() {
-    const root = qs(SEL.root);
-    if (!root) return;
-    const observer = new MutationObserver(onMutate);
-    observer.observe(root, {
-      childList: true,
-      attributes: true,
-      subtree: true,
-      attributeFilter: ['style','class']
-    });
-  }
-
-  // ===== 初始化 =====
-  function init() {
-    // 首次执行一次，避免 observer 未触发时状态不一致
-    hideSection();
-    tryClickNetworkTab();
-    setTimeout(forceBothVisible, 300);
-    hideDynamicH3();
-    updateTrafficProgressColors();
-
-    // 延时兜底，针对延迟渲染的组件
-    setTimeout(updateTrafficProgressColors, 1000);
-    setTimeout(updateTrafficProgressColors, 3000);
-
-    attachObserver();
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init, { once: true });
-  } else {
-    init();
-  }
-})();
+  const detailStyle = document.createElement('style');
+  detailStyle.setAttribute('data-nezhaop-style', 'detail-frame');
+  detailStyle.textContent = 'iframe[data-nezhaop-detail-frame] { display: block; } iframe[data-nezhaop-detail-frame][hidden] { display: none; }';
+  document.head.appendChild(detailStyle);
+  scheduleDetailScan();
+  scheduleDecorations();
+  decorationTimers.push(setTimeout(scheduleDecorations, 1000));
+  decorationTimers.push(setTimeout(scheduleDecorations, 3000));
 
 /* =========================================================
  * TrafficScript — Combined & Fixed (2025-06-17)
@@ -660,6 +789,24 @@ const domObserver = (() => {
     stopPeriodicRefresh();
     trafficRenderer.stopToggleCycle();
   });
+})();
+
+  function stopRuntime() {
+    if (runtime.stopped) return;
+    runtime.stopped = true;
+    cleanupDetail();
+    detailObserver.disconnect();
+    window.removeEventListener('message', onDetailMessage);
+    window.removeEventListener('popstate', scheduleDetailScan);
+    Object.keys(originalHistoryMethods).forEach(method => {
+      history[method] = originalHistoryMethods[method];
+    });
+    if (decorationFrame !== null) cancelAnimationFrame(decorationFrame);
+    decorationTimers.forEach(timer => clearTimeout(timer));
+  }
+
+  runtime.stop = stopRuntime;
+  window.addEventListener('beforeunload', stopRuntime, { once: true });
 })();
 
 
