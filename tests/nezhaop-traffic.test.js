@@ -270,7 +270,7 @@ test('a newer traffic request generation cannot be overwritten by an older delay
   const row = dashboard.document.querySelector('[data-nezhaop-cycle-row="1"]');
   assert.equal(row.querySelector('[data-nezhaop-percent]').textContent, '80%');
 
-  resolvers[0](response(10));
+  resolvers[0]({ data: { cycle_transfer_stats: {} } });
   await dashboard.settle();
   assert.equal(dashboard.document.querySelector('[data-nezhaop-cycle-row="1"]'), row);
   assert.equal(row.querySelector('[data-nezhaop-percent]').textContent, '80%');
@@ -309,6 +309,160 @@ test('an externally removed managed row is restored once without a fetch storm',
   await dashboard.settle(50);
   assert.equal(fetchLog.length - fetchCount, 1, 'restoring the script-owned row does not retrigger reconciliation');
   assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row="1"]').length, 1);
+});
+
+test('an accepted empty cycle response removes stale rows and a later response restores them', async t => {
+  const responses = [
+    {
+      cycle: {
+        server_name: { 1: 'card server' },
+        transfer: { 1: 25 },
+        max: 100,
+        from: '2026-08-01',
+        to: '2026-08-31'
+      }
+    },
+    {},
+    {
+      cycle: {
+        server_name: { 1: 'card server' },
+        transfer: { 1: 60 },
+        max: { 1: 120 },
+        from: { 1: '2026-09-01' },
+        to: { 1: '2026-09-30' }
+      }
+    }
+  ];
+  const fetchLog = [];
+  const dashboard = createTrafficDashboard({
+    lists: [{ layout: 'card', servers: ['card server'] }],
+    fetchResponse: () => ({ data: { cycle_transfer_stats: responses.shift() } }),
+    trafficConfig: { toggleInterval: 5000 },
+    fetchLog
+  });
+  t.after(() => dashboard.close());
+  let now = 0;
+  dashboard.window.Date.now = () => now;
+  const foreignRow = dashboard.document.createElement('div');
+  foreignRow.dataset.otherScriptTraffic = '1';
+  dashboard.document.querySelector('.card-shell').append(foreignRow);
+
+  dashboard.evaluate();
+  await dashboard.settle();
+  const firstRow = dashboard.document.querySelector('[data-nezhaop-cycle-row="1"]');
+  assert.ok(firstRow);
+
+  now += 700000;
+  dashboard.document.querySelector('.server-heading-layout')
+    .append(dashboard.document.createElement('span'));
+  await dashboard.settle(50);
+  assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row]').length, 0);
+  assert.equal(foreignRow.isConnected, true, 'cleanup does not remove another script\'s node');
+
+  now += 700000;
+  dashboard.document.querySelector('.server-heading-layout')
+    .append(dashboard.document.createElement('span'));
+  await dashboard.settle(50);
+  const restoredRow = dashboard.document.querySelector('[data-nezhaop-cycle-row="1"]');
+  assert.ok(restoredRow);
+  assert.notEqual(restoredRow, firstRow);
+  assert.equal(restoredRow.querySelector('[data-nezhaop-percent]').textContent, '50%');
+  assert.equal(fetchLog.length, 3);
+});
+
+test('removed-cycle reconciliation cleans every same-name target but preserves valid server rows', async t => {
+  const fullData = {
+    scalar: {
+      server_name: { 1: 'shared server' },
+      transfer: { 1: 50 },
+      max: 100,
+      from: '2026-10-01',
+      to: '2026-10-31'
+    },
+    mapped: {
+      server_name: { 2: 'kept server' },
+      transfer: { 2: 30 },
+      max: { 2: 100 },
+      from: { 2: '2026-10-01' },
+      to: { 2: '2026-10-31' }
+    }
+  };
+  const responses = [fullData, { mapped: fullData.mapped }, fullData];
+  const fetchLog = [];
+  const dashboard = createTrafficDashboard({
+    lists: [
+      { layout: 'card', servers: ['shared server', 'kept server'] },
+      { layout: 'inline', servers: ['shared server'] }
+    ],
+    fetchResponse: () => ({ data: { cycle_transfer_stats: responses.shift() } }),
+    fetchLog
+  });
+  t.after(() => dashboard.close());
+  let now = 0;
+  dashboard.window.Date.now = () => now;
+
+  dashboard.evaluate();
+  await dashboard.settle();
+  assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row="1"]').length, 2);
+  const keptRow = dashboard.document.querySelector('[data-nezhaop-cycle-row="2"]');
+  assert.ok(keptRow);
+
+  now += 700000;
+  dashboard.document.querySelector('.server-heading-layout')
+    .append(dashboard.document.createElement('span'));
+  await dashboard.settle(50);
+  assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row="1"]').length, 0);
+  assert.equal(dashboard.document.querySelector('[data-nezhaop-cycle-row="2"]'), keptRow);
+  assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row]').length, 1);
+
+  now += 700000;
+  dashboard.document.querySelector('.server-heading-layout')
+    .append(dashboard.document.createElement('span'));
+  await dashboard.settle(50);
+  assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row="1"]').length, 2);
+  assert.equal(dashboard.document.querySelector('[data-nezhaop-cycle-row="2"]'), keptRow);
+  assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row="2"]').length, 1);
+  assert.equal(fetchLog.length, 3);
+});
+
+test('a failed fresh request leaves rows from the last accepted response intact', async t => {
+  const responses = [
+    {
+      data: {
+        cycle_transfer_stats: {
+          cycle: {
+            server_name: { 1: 'card server' },
+            transfer: { 1: 40 },
+            max: 100,
+            from: '2026-11-01',
+            to: '2026-11-30'
+          }
+        }
+      }
+    },
+    { success: false }
+  ];
+  const fetchLog = [];
+  const dashboard = createTrafficDashboard({
+    lists: [{ layout: 'card', servers: ['card server'] }],
+    fetchResponse: () => responses.shift(),
+    fetchLog
+  });
+  t.after(() => dashboard.close());
+  let now = 0;
+  dashboard.window.Date.now = () => now;
+
+  dashboard.evaluate();
+  await dashboard.settle();
+  const row = dashboard.document.querySelector('[data-nezhaop-cycle-row="1"]');
+  assert.ok(row);
+
+  now += 700000;
+  dashboard.document.querySelector('.server-heading-layout')
+    .append(dashboard.document.createElement('span'));
+  await dashboard.settle(50);
+  assert.equal(dashboard.document.querySelector('[data-nezhaop-cycle-row="1"]'), row);
+  assert.equal(fetchLog.length, 2);
 });
 
 test('embedded detail mode starts no traffic fetches, intervals, or list observers', async t => {

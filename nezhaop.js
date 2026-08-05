@@ -500,6 +500,11 @@ const trafficRenderer = (() => {
     }
   }
 
+  function removeCycleRow(row) {
+    removeToggleElementsWithin(row);
+    row.remove();
+  }
+
   function findServerTargets(serverName) {
     const targets = [];
     document.querySelectorAll('.server-card-list, .server-inline-list').forEach(listRoot => {
@@ -569,10 +574,7 @@ const trafficRenderer = (() => {
   function renderTrafficStats(trafficData, config) {
     if (!config.showTrafficStats) {
       document.querySelectorAll('.server-card-list [data-nezhaop-cycle-row], .server-inline-list [data-nezhaop-cycle-row]')
-        .forEach(row => {
-          removeToggleElementsWithin(row);
-          row.remove();
-        });
+        .forEach(removeCycleRow);
       return;
     }
 
@@ -591,8 +593,9 @@ const trafficRenderer = (() => {
         const next_update = utils.pickCycleValue(cycle.next_update, serverId);
 
         if (serverName && transfer !== undefined && max && from && to) {
-          serverMap.set(serverName, {
+          serverMap.set(String(serverId), {
             id: serverId,
+            serverName,
             transfer,
             max,
             name: cycle.name,
@@ -604,7 +607,24 @@ const trafficRenderer = (() => {
       }
     }
 
-    serverMap.forEach((serverData, serverName) => {
+    const renderTargets = new Map();
+    serverMap.forEach((serverData, serverId) => {
+      renderTargets.set(serverId, {
+        serverData,
+        targets: findServerTargets(serverData.serverName)
+      });
+    });
+
+    document.querySelectorAll('.server-card-list [data-nezhaop-cycle-row], .server-inline-list [data-nezhaop-cycle-row]')
+      .forEach(row => {
+        const current = renderTargets.get(row.dataset.nezhaopCycleRow);
+        if (!current || !current.targets.some(({ container }) => container.contains(row))) {
+          removeCycleRow(row);
+        }
+      });
+
+    renderTargets.forEach(({ serverData, targets }) => {
+      const serverName = serverData.serverName;
       // 格式化
       const usedFormatted = utils.formatFileSize(serverData.transfer);
       const totalFormatted = utils.formatFileSize(serverData.max);
@@ -626,15 +646,12 @@ const trafficRenderer = (() => {
 
       const log = (...args) => { if (config.enableLog) console.log('[renderTrafficStats]', ...args); };
 
-      findServerTargets(serverName).forEach(({ container, metrics }) => {
+      targets.forEach(({ container, metrics }) => {
         // 已存在则按服务器 ID 原位更新，并清理历史重复项
         const matchingRows = Array.from(container.querySelectorAll('[data-nezhaop-cycle-row]'))
           .filter(row => row.dataset.nezhaopCycleRow === String(serverData.id));
         const existing = matchingRows.shift();
-        matchingRows.forEach(row => {
-          removeToggleElementsWithin(row);
-          row.remove();
-        });
+        matchingRows.forEach(removeCycleRow);
 
         if (existing) {
           utils.safeSetTextContent(existing, '.used-traffic', usedFormatted.value);
