@@ -77,6 +77,13 @@
       .filter(element => !element.matches('[data-nezhaop-detail-frame]'));
   }
 
+  function isLegacyDetailLayout(wrappers) {
+    if (wrappers.length !== 2 || !wrappers[0].querySelector('.server-charts')) return false;
+    const displays = wrappers.map(wrapper => wrapper.style.display);
+    return displays.includes('block') && displays.includes('none') &&
+      displays.every(display => display === 'block' || display === 'none');
+  }
+
   function revealLegacyPanels(state) {
     state.panels.forEach(panel => {
       panel.style.display = 'block';
@@ -143,10 +150,13 @@
     });
   }
 
-  function measureDetailHeight() {
-    const info = document.querySelector('.server-info');
-    const detailWrapper = info && getContentWrappers(info)
+  function getDetailWrapper(info = document.querySelector('.server-info')) {
+    return info && getContentWrappers(info)
       .find(wrapper => wrapper.querySelector('.server-charts'));
+  }
+
+  function measureDetailHeight() {
+    const detailWrapper = getDetailWrapper();
     if (!detailWrapper) return 1;
     return Math.max(detailWrapper.scrollHeight, Math.ceil(detailWrapper.getBoundingClientRect().height), 1);
   }
@@ -169,10 +179,13 @@
   }
 
   function ensureEmbeddedReady(state) {
-    if (!document.querySelector('.server-charts')) return;
-    if (!state.resizeObserver && typeof ResizeObserver === 'function') {
+    const detailWrapper = getDetailWrapper(state.info);
+    if (!detailWrapper) return;
+    if (state.resizeTarget !== detailWrapper && typeof ResizeObserver === 'function') {
+      if (state.resizeObserver) state.resizeObserver.disconnect();
       state.resizeObserver = new ResizeObserver(reportEmbeddedReady);
-      state.resizeObserver.observe(document.documentElement);
+      state.resizeObserver.observe(detailWrapper);
+      state.resizeTarget = detailWrapper;
     }
     reportEmbeddedReady();
   }
@@ -234,7 +247,7 @@
     }
 
     if (isEmbeddedDetail()) initializeEmbedded(info);
-    else if (contentWrappers.length >= 2) initializeLegacy(info, contentWrappers);
+    else if (isLegacyDetailLayout(contentWrappers)) initializeLegacy(info, contentWrappers);
     else initializeParent(info);
   }
 

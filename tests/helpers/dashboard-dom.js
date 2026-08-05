@@ -11,7 +11,17 @@ function serverInfoMarkup({ legacy = false, view = 'detail' } = {}) {
       <div class="network-panel" style="display:${view === 'network' ? 'block' : 'none'}">network chart</div>`
     : view === 'detail'
       ? '<section class="detail-panel"><section class="server-charts" data-view="detail">detail chart</section></section>'
-      : '<div class="network-panel">network chart</div>';
+      : view === 'network-no-data'
+        ? `
+          <div class="flex flex-col items-center justify-center">
+            <p class="text-sm font-medium opacity-40"></p>
+            <p class="text-sm font-medium opacity-40 mb-4">No data</p>
+          </div>
+          <div data-slot="card" class="network-loading-card">
+            <div data-slot="card-header">loading header</div>
+            <div data-slot="card-content">loading chart</div>
+          </div>`
+        : '<div class="network-panel">network chart</div>';
 
   return `
     <div class="server-info" data-frontend="${legacy ? 'legacy' : 'current'}" style="gap:16px;max-width:1024px">
@@ -31,7 +41,7 @@ function serverInfoMarkup({ legacy = false, view = 'detail' } = {}) {
     </div>`;
 }
 
-function detailPage({ legacy = false, extraMarkup = '' } = {}) {
+function detailPage({ legacy = false, view = 'detail', extraMarkup = '' } = {}) {
 
   return `<!doctype html>
     <html>
@@ -43,7 +53,7 @@ function detailPage({ legacy = false, extraMarkup = '' } = {}) {
               <section class="header-top">dashboard header</section>
               <section class="header-timer">dashboard timer</section>
             </div>
-            ${serverInfoMarkup({ legacy })}
+            ${serverInfoMarkup({ legacy, view })}
             ${extraMarkup}
           </main>
         </div>
@@ -56,6 +66,7 @@ function createDashboard(options = {}) {
   const {
     url = 'https://dashboard.example/server/1',
     legacy = false,
+    view = 'detail',
     html = null,
     extraMarkup = '',
     fetchResponse = { data: { cycle_transfer_stats: {} } },
@@ -66,7 +77,7 @@ function createDashboard(options = {}) {
     fetchLog = [],
     fetchOptionsLog = []
   } = options;
-  const dom = new JSDOM(html || detailPage({ legacy, extraMarkup }), {
+  const dom = new JSDOM(html || detailPage({ legacy, view, extraMarkup }), {
     url,
     runScripts: 'dangerously',
     pretendToBeVisual: true

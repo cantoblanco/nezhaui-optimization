@@ -64,6 +64,61 @@ test('embedded detail marker prevents recursion, hides chrome, and reports readi
   assert.ok(messages.length > messageCount, 'a resized Detail view reports a fresh height');
 });
 
+test('embedded child observes the Detail wrapper and syncs dynamic height to its parent', async t => {
+  const parent = createDashboard();
+  const resizeLog = [];
+  const child = createDashboard({
+    url: 'https://dashboard.example/server/1?nezhaop_view=detail',
+    resizeLog
+  });
+  t.after(() => child.close());
+  t.after(() => parent.close());
+
+  parent.evaluate();
+  await parent.settle();
+  const frame = parent.document.querySelector('iframe[data-nezhaop-detail-frame]');
+  let detailHeight = 200;
+  const detailWrapper = child.document.querySelector('.detail-panel');
+  Object.defineProperty(detailWrapper, 'scrollHeight', { get: () => detailHeight });
+  child.window.postMessage = message => {
+    parent.window.dispatchEvent(new parent.window.MessageEvent('message', {
+      data: message,
+      origin: parent.window.location.origin,
+      source: frame.contentWindow
+    }));
+  };
+
+  child.evaluate();
+  await child.settle();
+  await parent.settle();
+
+  assert.ok(resizeLog[0].targets.has(detailWrapper), 'ResizeObserver targets the measured wrapper');
+  assert.equal(resizeLog.length, 1, 'the stable wrapper reuses one observer');
+  assert.equal(frame.style.height, '200px');
+
+  detailHeight = 400;
+  child.triggerResize();
+  await child.settle();
+  await parent.settle();
+  assert.equal(frame.style.height, '400px');
+
+  const nextWrapper = child.document.createElement('section');
+  nextWrapper.className = 'detail-panel';
+  nextWrapper.innerHTML = '<section class="server-charts">replacement detail chart</section>';
+  Object.defineProperty(nextWrapper, 'scrollHeight', { value: 500 });
+  detailWrapper.replaceWith(nextWrapper);
+  await child.settle();
+  await parent.settle();
+
+  assert.equal(resizeLog[0].targets.size, 0, 'the replaced wrapper is disconnected');
+  assert.ok(resizeLog.at(-1).targets.has(nextWrapper), 'observer reconnects to a replacement wrapper');
+  assert.equal(frame.style.height, '500px');
+
+  const activeObserver = resizeLog.at(-1);
+  child.window.__NEZHAOP_RUNTIME__.stop();
+  assert.equal(activeObserver.targets.size, 0, 'runtime cleanup disconnects the active wrapper');
+});
+
 test('embedded detail child does not start the home traffic subsystem', async t => {
   const fetchLog = [];
   const intervalLog = [];
@@ -175,6 +230,21 @@ test('public stop clears all resources and allows a clean reevaluation', async t
   assert.equal(dashboard.getActiveIntervalCount(), intervalCount);
   assert.equal(dashboard.document.querySelectorAll('iframe[data-nezhaop-detail-frame]').length, 1);
   assert.equal(dashboard.document.querySelectorAll('style[data-nezhaop-style]').length, 1);
+});
+
+test('current Network no-data fragment is not misclassified as a legacy layout', async t => {
+  const dashboard = createDashboard({ view: 'network-no-data' });
+  t.after(() => dashboard.close());
+
+  dashboard.evaluate();
+  await dashboard.settle();
+
+  const frame = dashboard.document.querySelector('iframe[data-nezhaop-detail-frame]');
+  assert.ok(frame, 'the v2.4.2 two-sibling no-data view still gets an embedded Detail frame');
+  assert.equal(dashboard.window.__NEZHAOP_RUNTIME__.detail.mode, 'parent');
+  assert.equal(dashboard.getNetworkClicks(), 0, 'the parent waits for embedded Detail readiness');
+  assert.notEqual(dashboard.document.querySelector('.tabs-section').style.display, 'none');
+  assert.equal(frame.hidden, true);
 });
 
 test('legacy dual-mounted frontend reveals both panels without an iframe', async t => {
