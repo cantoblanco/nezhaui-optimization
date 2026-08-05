@@ -291,7 +291,7 @@
     });
     ensureTrafficStyles();
     document.querySelectorAll('.new-inserted-element .progress-bar').forEach(bar => {
-      const card = bar.closest('.w-full') || bar.parentElement;
+      const card = bar.closest('[data-nezhaop-cycle-row], .w-full') || bar.parentElement;
       if (!card) return;
       const percentageElement = card.querySelector('.percentage-value, .text-xs.font-medium.text-neutral-600');
       const match = (percentageElement ? percentageElement.textContent : card.textContent).match(/(\d+(?:\.\d+)?)%/);
@@ -479,7 +479,90 @@ const trafficRenderer = (() => {
   const toggleElements = [];  // { el: HTMLElement, contents: string[] }
   let toggleTimer = null;
 
+  function removeToggleElementsWithin(row) {
+    for (let i = toggleElements.length - 1; i >= 0; i--) {
+      if (toggleElements[i].el && row.contains(toggleElements[i].el)) {
+        toggleElements.splice(i, 1);
+      }
+    }
+  }
+
+  function findServerTargets(serverName) {
+    const targets = [];
+    document.querySelectorAll('.server-card-list, .server-inline-list').forEach(listRoot => {
+      listRoot.querySelectorAll('section p').forEach(nameElement => {
+        if (nameElement.textContent.trim() !== serverName.trim()) return;
+        const heading = nameElement.closest('section');
+        if (!heading) return;
+
+        let container = heading.parentElement;
+        while (container && container !== listRoot) {
+          const metrics = Array.from(container.querySelectorAll('section')).find(section => (
+            section !== heading
+            && Boolean(heading.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING)
+            && section.children.length >= 3
+          ));
+          if (metrics) {
+            targets.push({ container, metrics });
+            return;
+          }
+          container = container.parentElement;
+        }
+      });
+    });
+    return targets;
+  }
+
+  function getInsertionAnchor(metrics, insertAfter) {
+    if (!insertAfter) return metrics;
+    let sibling = metrics.nextElementSibling;
+    while (sibling) {
+      if (sibling.matches('section:not([data-nezhaop-cycle-row])')
+          && sibling.children.length >= 2
+          && !sibling.querySelector(':scope > p')) {
+        return sibling;
+      }
+      sibling = sibling.nextElementSibling;
+    }
+    return metrics;
+  }
+
+  function getToggleContents(fromFormatted, toFormatted, pctClamped, nextUpdateFormatted) {
+    const defaultTimeInfoHTML = `
+      <span class="from-date">${fromFormatted}</span>
+      <span class="text-neutral-500 dark:text-neutral-400">-</span>
+      <span class="to-date">${toFormatted}</span>
+    `;
+    return {
+      defaultTimeInfoHTML,
+      contents: [
+        defaultTimeInfoHTML,
+        `<span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200">${pctClamped}%</span>`,
+        nextUpdateFormatted ? `<span class="text-[10px] font-medium text-neutral-600 dark:text-neutral-300">${nextUpdateFormatted}</span>` : defaultTimeInfoHTML
+      ]
+    };
+  }
+
+  function updateToggleElement(element, contents, enabled) {
+    const existingToggle = toggleElements.find(item => item.el === element);
+    if (!enabled) {
+      if (existingToggle) toggleElements.splice(toggleElements.indexOf(existingToggle), 1);
+      return;
+    }
+    if (existingToggle) existingToggle.contents = contents;
+    else toggleElements.push({ el: element, contents });
+  }
+
   function renderTrafficStats(trafficData, config) {
+    if (!config.showTrafficStats) {
+      document.querySelectorAll('.server-card-list [data-nezhaop-cycle-row], .server-inline-list [data-nezhaop-cycle-row]')
+        .forEach(row => {
+          removeToggleElementsWithin(row);
+          row.remove();
+        });
+      return;
+    }
+
     const serverMap = new Map();
 
     // 聚合每台服务器的数据
@@ -509,11 +592,6 @@ const trafficRenderer = (() => {
     }
 
     serverMap.forEach((serverData, serverName) => {
-      // 定位到当前服务器的展示 section
-      const targetElement = Array.from(document.querySelectorAll('section.grid.items-center.gap-2'))
-        .find(section => section.querySelector('p')?.textContent.trim() === serverName.trim());
-      if (!targetElement) return;
-
       // 格式化
       const usedFormatted = utils.formatFileSize(serverData.transfer);
       const totalFormatted = utils.formatFileSize(serverData.max);
@@ -526,100 +604,78 @@ const trafficRenderer = (() => {
         : '';
       const uniqueClassName = 'traffic-stats-for-server-' + serverData.id;
       const progressColor = utils.getHslGradientColor(pctClamped);
-      const containerDiv = targetElement.closest('div');
-      if (!containerDiv) return;
+      const { defaultTimeInfoHTML, contents } = getToggleContents(
+        fromFormatted,
+        toFormatted,
+        pctClamped,
+        nextUpdateFormatted
+      );
 
       const log = (...args) => { if (config.enableLog) console.log('[renderTrafficStats]', ...args); };
 
-      // 已存在则更新
-      const existing = Array.from(containerDiv.querySelectorAll('.new-inserted-element'))
-        .find(el => el.classList.contains(uniqueClassName));
+      findServerTargets(serverName).forEach(({ container, metrics }) => {
+        // 已存在则按服务器 ID 原位更新，并清理历史重复项
+        const matchingRows = Array.from(container.querySelectorAll('[data-nezhaop-cycle-row]'))
+          .filter(row => row.dataset.nezhaopCycleRow === String(serverData.id));
+        const existing = matchingRows.shift();
+        matchingRows.forEach(row => {
+          removeToggleElementsWithin(row);
+          row.remove();
+        });
 
-      if (!config.showTrafficStats) {
         if (existing) {
-          // 同步清理轮播元素
-          for (let i = toggleElements.length - 1; i >= 0; i--) {
-            if (toggleElements[i].el && existing.contains(toggleElements[i].el)) {
-              toggleElements.splice(i, 1);
-            }
+          utils.safeSetTextContent(existing, '.used-traffic', usedFormatted.value);
+          utils.safeSetTextContent(existing, '.used-unit', usedFormatted.unit);
+          utils.safeSetTextContent(existing, '.total-traffic', totalFormatted.value);
+          utils.safeSetTextContent(existing, '.total-unit', totalFormatted.unit);
+          utils.safeSetTextContent(existing, '.from-date', fromFormatted);
+          utils.safeSetTextContent(existing, '.to-date', toFormatted);
+          utils.safeSetTextContent(existing, '[data-nezhaop-percent]', pctClamped + '%');
+          utils.safeSetTextContent(existing, '.next-update', nextUpdateFormatted ? `next update: ${nextUpdateFormatted}` : '');
+
+          const progressBar = existing.querySelector('[data-nezhaop-progress]');
+          if (progressBar) {
+            progressBar.style.width = pctClamped + '%';
+            progressBar.style.backgroundColor = progressColor;
           }
-          existing.remove();
-          log(`移除流量条目: ${serverName}`);
-        }
-        return;
-      }
-
-      if (existing) {
-        utils.safeSetTextContent(existing, '.used-traffic', usedFormatted.value);
-        utils.safeSetTextContent(existing, '.used-unit', usedFormatted.unit);
-        utils.safeSetTextContent(existing, '.total-traffic', totalFormatted.value);
-        utils.safeSetTextContent(existing, '.total-unit', totalFormatted.unit);
-        utils.safeSetTextContent(existing, '.from-date', fromFormatted);
-        utils.safeSetTextContent(existing, '.to-date', toFormatted);
-        utils.safeSetTextContent(existing, '.percentage-value', pctClamped + '%');
-        utils.safeSetTextContent(existing, '.next-update', nextUpdateFormatted ? `next update: ${nextUpdateFormatted}` : '');
-
-        const progressBar = existing.querySelector('.progress-bar');
-        if (progressBar) {
-          progressBar.style.width = pctClamped + '%';
-          progressBar.style.backgroundColor = progressColor;
-        }
-        log(`更新流量条目: ${serverName}`);
-      } else {
-        // 新建
-        let oldSection = null;
-        if (config.insertAfter) {
-          oldSection = containerDiv.querySelector('section.flex.items-center.w-full.justify-between.gap-1')
-            || containerDiv.querySelector('section.grid.items-center.gap-3');
+          const timeInfoElement = existing.querySelector('.time-info');
+          if (timeInfoElement) updateToggleElement(timeInfoElement, contents, config.toggleInterval > 0);
+          log(`更新流量条目: ${serverName}`);
         } else {
-          oldSection = containerDiv.querySelector('section.grid.items-center.gap-3');
-        }
-        if (!oldSection) return;
-
-        const defaultTimeInfoHTML = `
-          <span class="from-date">${fromFormatted}</span>
-          <span class="text-neutral-500 dark:text-neutral-400">-</span>
-          <span class="to-date">${toFormatted}</span>
-        `;
-        const contents = [
-          defaultTimeInfoHTML,
-          `<span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 percentage-value">${pctClamped}%</span>`,
-          nextUpdateFormatted ? `<span class="text-[10px] font-medium text-neutral-600 dark:text-neutral-300">${nextUpdateFormatted}</span>` : defaultTimeInfoHTML
-        ];
-
-        const newElement = document.createElement('div');
-        newElement.classList.add('space-y-1.5', 'new-inserted-element', uniqueClassName);
-        newElement.style.width = '100%';
-        newElement.innerHTML = `
-          <div class="flex items-center justify-between">
-            <div class="flex items-baseline gap-1">
-              <span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 used-traffic">${usedFormatted.value}</span>
-              <span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 used-unit">${usedFormatted.unit}</span>
-              <span class="text-[10px] text-neutral-500 dark:text-neutral-400">/ </span>
-              <span class="text-[10px] text-neutral-500 dark:text-neutral-400 total-traffic">${totalFormatted.value}</span>
-              <span class="text-[10px] text-neutral-500 dark:text-neutral-400 total-unit">${totalFormatted.unit}</span>
+          // 新建
+          const newElement = document.createElement('div');
+          newElement.classList.add('space-y-1.5', 'new-inserted-element', uniqueClassName);
+          newElement.dataset.nezhaopCycleRow = String(serverData.id);
+          newElement.style.width = '100%';
+          newElement.innerHTML = `
+            <span hidden class="percentage-value" data-nezhaop-percent>${pctClamped}%</span>
+            <span hidden class="next-update">${nextUpdateFormatted ? `next update: ${nextUpdateFormatted}` : ''}</span>
+            <div class="flex items-center justify-between">
+              <div class="flex items-baseline gap-1">
+                <span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 used-traffic">${usedFormatted.value}</span>
+                <span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 used-unit">${usedFormatted.unit}</span>
+                <span class="text-[10px] text-neutral-500 dark:text-neutral-400">/ </span>
+                <span class="text-[10px] text-neutral-500 dark:text-neutral-400 total-traffic">${totalFormatted.value}</span>
+                <span class="text-[10px] text-neutral-500 dark:text-neutral-400 total-unit">${totalFormatted.unit}</span>
+              </div>
+              <div class="text-[10px] font-medium text-neutral-600 dark:text-neutral-300 time-info" style="opacity:1; transition: opacity 0.3s;">
+                ${defaultTimeInfoHTML}
+              </div>
             </div>
-            <div class="text-[10px] font-medium text-neutral-600 dark:text-neutral-300 time-info" style="opacity:1; transition: opacity 0.3s;">
-              ${defaultTimeInfoHTML}
+            <div class="relative h-1.5">
+              <div class="absolute inset-0 bg-neutral-100 dark:bg-neutral-800 rounded-full"></div>
+              <div class="absolute inset-0 bg-emerald-500 rounded-full transition-all duration-300 progress-bar" data-nezhaop-progress
+                   style="width: ${pctClamped}%; max-width: 100%; background-color: ${progressColor};"></div>
             </div>
-          </div>
-          <div class="relative h-1.5">
-            <div class="absolute inset-0 bg-neutral-100 dark:bg-neutral-800 rounded-full"></div>
-            <div class="absolute inset-0 bg-emerald-500 rounded-full transition-all duration-300 progress-bar"
-                 style="width: ${pctClamped}%; max-width: 100%; background-color: ${progressColor};"></div>
-          </div>
-        `;
+          `;
 
-        oldSection.after(newElement);
-        log(`插入新流量条目: ${serverName}`);
+          getInsertionAnchor(metrics, config.insertAfter).after(newElement);
+          log(`插入新流量条目: ${serverName}`);
 
-        if (config.toggleInterval > 0) {
           const timeInfoElement = newElement.querySelector('.time-info');
-          if (timeInfoElement) {
-            toggleElements.push({ el: timeInfoElement, contents });
-          }
+          if (timeInfoElement) updateToggleElement(timeInfoElement, contents, config.toggleInterval > 0);
         }
-      }
+      });
     });
   }
 
@@ -698,43 +754,80 @@ const trafficDataManager = (() => {
 /* ============= DOM 变化监听模块 ============= */
 const domObserver = (() => {
   const TARGET_SELECTOR = 'section.server-card-list, section.server-inline-list';
-  let currentSection = null;
-  let childObserver = null;
+  const sectionObservers = new Map();
+  let changePending = false;
+  let active = false;
 
-  function onDomChildListChange(onChangeCallback) {
-    onChangeCallback();
+  function isScriptOwnedNode(node) {
+    if (node.nodeType !== Node.ELEMENT_NODE) return false;
+    return node.matches('[data-nezhaop-cycle-row]')
+      || Boolean(node.closest('[data-nezhaop-cycle-row]'));
   }
 
-  function observeSection(section, onChangeCallback) {
-    if (childObserver) childObserver.disconnect();
-    currentSection = section;
-    childObserver = new MutationObserver(mutations => {
-      for (const m of mutations) {
-        if (m.type === 'childList' && (m.addedNodes.length || m.removedNodes.length)) {
-          onDomChildListChange(onChangeCallback);
-          break;
-        }
+  function requiresReconciliation(mutations) {
+    return mutations.some(mutation => {
+      if (mutation.type !== 'childList' || (!mutation.addedNodes.length && !mutation.removedNodes.length)) {
+        return false;
       }
+      if (mutation.target.nodeType === Node.ELEMENT_NODE
+          && mutation.target.closest('[data-nezhaop-cycle-row]')) {
+        return false;
+      }
+      const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+      return nodes.some(node => !isScriptOwnedNode(node));
     });
-    // 如果列表项可能深层插入，可将 subtree 改为 true
-    childObserver.observe(currentSection, { childList: true, subtree: false });
-    onChangeCallback();
+  }
+
+  function scheduleChange(onChangeCallback) {
+    if (!active || changePending) return;
+    changePending = true;
+    Promise.resolve().then(() => {
+      changePending = false;
+      if (active) onChangeCallback();
+    });
+  }
+
+  function syncSections(onChangeCallback) {
+    const currentSections = new Set(document.querySelectorAll(TARGET_SELECTOR));
+    let changed = false;
+
+    sectionObservers.forEach((observer, section) => {
+      if (currentSections.has(section)) return;
+      observer.disconnect();
+      sectionObservers.delete(section);
+      changed = true;
+    });
+
+    currentSections.forEach(section => {
+      if (sectionObservers.has(section)) return;
+      const observer = new MutationObserver(mutations => {
+        if (requiresReconciliation(mutations)) scheduleChange(onChangeCallback);
+      });
+      observer.observe(section, { childList: true, subtree: true });
+      sectionObservers.set(section, observer);
+      changed = true;
+    });
+
+    return changed;
   }
 
   function startSectionDetector(onChangeCallback) {
-    const sectionDetector = new MutationObserver(() => {
-      const section = document.querySelector(TARGET_SELECTOR);
-      if (section && section !== currentSection) {
-        observeSection(section, onChangeCallback);
-      }
+    active = true;
+    syncSections(onChangeCallback);
+    const sectionDetector = new MutationObserver(mutations => {
+      if (!requiresReconciliation(mutations)) return;
+      if (syncSections(onChangeCallback)) scheduleChange(onChangeCallback);
     });
-    const root = document.querySelector('main') || document.body;
+    const root = document.body || document.documentElement;
     sectionDetector.observe(root, { childList: true, subtree: true });
     return sectionDetector;
   }
 
   function disconnectAll(sectionDetector) {
-    if (childObserver) childObserver.disconnect();
+    active = false;
+    changePending = false;
+    sectionObservers.forEach(observer => observer.disconnect());
+    sectionObservers.clear();
     if (sectionDetector) sectionDetector.disconnect();
   }
 

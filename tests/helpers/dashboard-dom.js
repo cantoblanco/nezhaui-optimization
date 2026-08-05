@@ -31,7 +31,7 @@ function serverInfoMarkup({ legacy = false, view = 'detail' } = {}) {
     </div>`;
 }
 
-function detailPage({ legacy = false } = {}) {
+function detailPage({ legacy = false, extraMarkup = '' } = {}) {
 
   return `<!doctype html>
     <html>
@@ -44,6 +44,7 @@ function detailPage({ legacy = false } = {}) {
               <section class="header-timer">dashboard timer</section>
             </div>
             ${serverInfoMarkup({ legacy })}
+            ${extraMarkup}
           </main>
         </div>
         <footer>dashboard footer</footer>
@@ -55,12 +56,16 @@ function createDashboard(options = {}) {
   const {
     url = 'https://dashboard.example/server/1',
     legacy = false,
+    html = null,
+    extraMarkup = '',
+    fetchResponse = { data: { cycle_transfer_stats: {} } },
     observerLog = [],
     intervalLog = [],
+    intervalCallbackLog = [],
     resizeLog = [],
     fetchLog = []
   } = options;
-  const dom = new JSDOM(detailPage({ legacy }), {
+  const dom = new JSDOM(html || detailPage({ legacy, extraMarkup }), {
     url,
     runScripts: 'dangerously',
     pretendToBeVisual: true
@@ -69,14 +74,32 @@ function createDashboard(options = {}) {
 
   window.fetch = async url => {
     fetchLog.push(url);
-    return { json: async () => ({ data: { cycle_transfer_stats: {} } }) };
+    const response = typeof fetchResponse === 'function'
+      ? fetchResponse(url)
+      : fetchResponse;
+    return { json: async () => response };
   };
 
   const NativeMutationObserver = window.MutationObserver;
   window.MutationObserver = class TrackedMutationObserver extends NativeMutationObserver {
     constructor(callback) {
       super(callback);
+      this.observedTargets = new Map();
+      this.observeHistory = [];
+      this.disconnectCount = 0;
       observerLog.push(this);
+    }
+
+    observe(target, options) {
+      this.observedTargets.set(target, { ...options });
+      this.observeHistory.push({ target, options: { ...options } });
+      return super.observe(target, options);
+    }
+
+    disconnect() {
+      this.disconnectCount += 1;
+      this.observedTargets.clear();
+      return super.disconnect();
     }
   };
 
@@ -102,6 +125,7 @@ function createDashboard(options = {}) {
   window.setInterval = (callback, delay, ...args) => {
     const id = nativeSetInterval(callback, delay, ...args);
     intervalLog.push(id);
+    intervalCallbackLog.push({ callback, delay, id });
     activeIntervals.add(id);
     return id;
   };
@@ -155,14 +179,98 @@ function createDashboard(options = {}) {
         if (observer.targets.size) observer.callback([]);
       });
     },
-    async settle() {
-      await new Promise(resolve => window.setTimeout(resolve, 25));
+    async settle(delay = 25) {
+      await new Promise(resolve => window.setTimeout(resolve, delay));
     },
     close() {
       window.dispatchEvent(new window.Event('beforeunload'));
       window.close();
     }
   };
+}
+
+function metricCells(count) {
+  return Array.from({ length: count }, (_, index) => `
+    <div class="metric-cell-${index}">
+      <p>metric ${index}</p>
+      <div>${index}</div>
+    </div>`).join('');
+}
+
+function serverCardMarkup({ name, layout = 'card' }) {
+  const heading = `
+    <section class="server-heading-layout" style="grid-template-columns:auto auto 1fr">
+      <span></span>
+      <div><span data-flag></span></div>
+      <div><p class="server-title">${name}</p></div>
+    </section>`;
+
+  if (layout === 'inline') {
+    return `
+      <section class="server-inline-wrapper">
+        <div data-slot="card" class="inline-card-shell">
+          ${heading}
+          <div role="separator"></div>
+          <div class="inline-metrics-shell">
+            <section class="inline-metric-layout">${metricCells(9)}</section>
+            <section class="inline-plan-layout"><p>plan badge</p></section>
+          </div>
+        </div>
+      </section>`;
+  }
+
+  return `
+    <div data-slot="card" class="card-shell">
+      ${heading}
+      <div class="card-metrics-shell">
+        <section class="card-metric-layout">${metricCells(5)}</section>
+        <section class="card-transfer-layout"><span>upload</span><span>download</span></section>
+      </div>
+    </div>`;
+}
+
+function listMarkup({ layout, servers }) {
+  return `
+    <section class="${layout === 'inline' ? 'server-inline-list' : 'server-card-list'}">
+      ${servers.map(name => serverCardMarkup({ name, layout })).join('')}
+    </section>`;
+}
+
+function homePage(lists) {
+  return `<!doctype html>
+    <html>
+      <head></head>
+      <body>
+        <div id="root"><main>${lists.join('')}</main></div>
+        <footer>dashboard footer</footer>
+      </body>
+    </html>`;
+}
+
+function createTrafficDashboard(options = {}) {
+  const {
+    lists = [
+      { layout: 'card', servers: ['card server'] },
+      { layout: 'inline', servers: ['inline server'] }
+    ],
+    trafficData = {},
+    trafficConfig = {},
+    ...dashboardOptions
+  } = options;
+  const dashboard = createDashboard({
+    url: 'https://dashboard.example/',
+    html: homePage(lists.map(listMarkup)),
+    fetchResponse: { data: { cycle_transfer_stats: trafficData } },
+    ...dashboardOptions
+  });
+  dashboard.window.TrafficScriptConfig = {
+    interval: 600000,
+    toggleInterval: 0,
+    duration: 0,
+    timeZone: 'UTC',
+    ...trafficConfig
+  };
+  return dashboard;
 }
 
 function sendDetailReady(dashboard, frame, height = 640) {
@@ -176,5 +284,8 @@ function sendDetailReady(dashboard, frame, height = 640) {
 
 module.exports = {
   createDashboard,
+  createTrafficDashboard,
+  listMarkup,
+  serverCardMarkup,
   sendDetailReady
 };
