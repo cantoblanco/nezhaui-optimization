@@ -5,8 +5,11 @@
   const RUNTIME_KEY = '__NEZHAOP_RUNTIME__';
   const existingRuntime = window[RUNTIME_KEY];
   if (existingRuntime) {
-    existingRuntime.rescan();
-    return;
+    if (!existingRuntime.stopped) {
+      existingRuntime.rescan();
+      return;
+    }
+    delete window[RUNTIME_KEY];
   }
 
   const DETAIL_PARAM = 'nezhaop_view';
@@ -26,6 +29,7 @@
   window.ShowNetTransfer = true;
   window.DisableAnimatedMan = false;
   window.ForceUseSvgFlag = true;
+  const startsEmbedded = isEmbeddedDetail();
 
   function isServerDetailRoute() {
     return /^\/server\/[^/]+\/?$/.test(window.location.pathname);
@@ -68,7 +72,9 @@
     const tabSection = getTabSection(info);
     if (!tabSection || tabSection.parentElement !== info) return [];
     const children = Array.from(info.children);
-    return children.slice(children.indexOf(tabSection) + 1);
+    return children
+      .slice(children.indexOf(tabSection) + 1)
+      .filter(element => !element.matches('[data-nezhaop-detail-frame]'));
   }
 
   function revealLegacyPanels(state) {
@@ -104,7 +110,7 @@
     frame.style.width = '100%';
     frame.style.border = '0';
     frame.style.overflow = 'hidden';
-    info.insertAdjacentElement('afterend', frame);
+    getTabSection(info).insertAdjacentElement('afterend', frame);
     return frame;
   }
 
@@ -138,27 +144,22 @@
   }
 
   function measureDetailHeight() {
-    const root = document.documentElement;
-    const body = document.body;
     const info = document.querySelector('.server-info');
-    const charts = document.querySelector('.server-charts');
-    return Math.max(
-      root ? root.scrollHeight : 0,
-      body ? body.scrollHeight : 0,
-      info ? info.scrollHeight : 0,
-      charts ? Math.ceil(charts.getBoundingClientRect().bottom) : 0,
-      1
-    );
+    const detailWrapper = info && getContentWrappers(info)
+      .find(wrapper => wrapper.querySelector('.server-charts'));
+    if (!detailWrapper) return 1;
+    return Math.max(detailWrapper.scrollHeight, Math.ceil(detailWrapper.getBoundingClientRect().height), 1);
   }
 
   function reportEmbeddedReady() {
     window.parent.postMessage({ type: DETAIL_MESSAGE, height: measureDetailHeight() }, window.location.origin);
   }
 
-  function initializeEmbedded() {
+  function initializeEmbedded(info) {
     const state = {
       mode: 'embedded',
       routeKey: runtime.routeKey,
+      info,
       hidden: []
     };
     runtime.detail = state;
@@ -211,7 +212,11 @@
     const contentWrappers = getContentWrappers(info);
     if (!contentWrappers.length) return;
 
-    const state = runtime.detail;
+    let state = runtime.detail;
+    if (state && state.routeKey === runtime.routeKey && state.info !== info) {
+      cleanupDetail();
+      state = null;
+    }
     if (state && state.routeKey === runtime.routeKey) {
       if (state.mode === 'legacy') revealLegacyPanels(state);
       if (state.mode === 'embedded') {
@@ -228,7 +233,7 @@
       return;
     }
 
-    if (isEmbeddedDetail()) initializeEmbedded();
+    if (isEmbeddedDetail()) initializeEmbedded(info);
     else if (contentWrappers.length >= 2) initializeLegacy(info, contentWrappers);
     else initializeParent(info);
   }
@@ -262,6 +267,8 @@
 
   let decorationFrame = null;
   const decorationTimers = [];
+  const runtimeStyles = [];
+  let stopTrafficSubsystem = () => {};
 
   function ensureTrafficStyles() {
     if (document.querySelector('#traffic-progress-style')) return;
@@ -274,6 +281,7 @@
       .traffic-progress-critical { background: linear-gradient(90deg, #6b7280 0%, #4b5563 100%) !important; }
     `;
     document.head.appendChild(style);
+    runtimeStyles.push(style);
   }
 
   function refreshDecorations() {
@@ -304,7 +312,7 @@
 
   const detailObserver = new MutationObserver(() => {
     scheduleDetailScan();
-    scheduleDecorations();
+    if (!startsEmbedded) scheduleDecorations();
   });
   detailObserver.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener('message', onDetailMessage);
@@ -323,13 +331,23 @@
 
   const detailStyle = document.createElement('style');
   detailStyle.setAttribute('data-nezhaop-style', 'detail-frame');
-  detailStyle.textContent = 'iframe[data-nezhaop-detail-frame] { display: block; } iframe[data-nezhaop-detail-frame][hidden] { display: none; }';
+  detailStyle.textContent = `
+    iframe[data-nezhaop-detail-frame] { display: block; }
+    iframe[data-nezhaop-detail-frame][hidden] { display: none; }
+    html[data-nezhaop-view="detail"],
+    html[data-nezhaop-view="detail"] body { min-height: 0 !important; }
+    html[data-nezhaop-view="detail"] main { min-height: 0 !important; padding: 0 !important; }
+    html[data-nezhaop-view="detail"] .server-info { gap: 0 !important; max-width: none !important; }
+  `;
   document.head.appendChild(detailStyle);
   scheduleDetailScan();
-  scheduleDecorations();
-  decorationTimers.push(setTimeout(scheduleDecorations, 1000));
-  decorationTimers.push(setTimeout(scheduleDecorations, 3000));
+  if (!startsEmbedded) {
+    scheduleDecorations();
+    decorationTimers.push(setTimeout(scheduleDecorations, 1000));
+    decorationTimers.push(setTimeout(scheduleDecorations, 3000));
+  }
 
+if (!startsEmbedded) {
 /* =========================================================
  * TrafficScript — Combined & Fixed (2025-06-17)
  * - 修复 const 重赋值
@@ -348,12 +366,14 @@ const SCRIPT_VERSION = 'v20250617';
 // 更精确：只有带 data-hide="1" 的容器才隐藏其直系 div，且不隐藏 .new-inserted-element
 (function injectCustomCSS() {
   const style = document.createElement('style');
+  style.setAttribute('data-nezhaop-traffic-style', 'card-visibility');
   style.textContent = `
     .mt-4.w-full.mx-auto[data-hide="1"] > div:not(.new-inserted-element) {
       display: none;
     }
   `;
   document.head.appendChild(style);
+  runtimeStyles.push(style);
 })();
 
 /* ============= 工具函数模块 ============= */
@@ -777,7 +797,7 @@ const domObserver = (() => {
   onDomChange();
 
   // 100ms 后检测并应用可能晚到的用户配置
-  setTimeout(() => {
+  const configRefreshTimer = setTimeout(() => {
     const newConfig = Object.assign({}, defaultConfig, window.TrafficScriptConfig || {});
     if (JSON.stringify(newConfig) !== JSON.stringify(config)) {
       if (config.enableLog) console.log('[main] 100ms后检测到新配置，更新配置并重启任务');
@@ -793,17 +813,24 @@ const domObserver = (() => {
     }
   }, 100);
 
-  // 页面卸载清理
-  window.addEventListener('beforeunload', () => {
+  let trafficStopped = false;
+  stopTrafficSubsystem = () => {
+    if (trafficStopped) return;
+    trafficStopped = true;
+    clearTimeout(configRefreshTimer);
     domObserver.disconnectAll(sectionDetector);
     stopPeriodicRefresh();
     trafficRenderer.stopToggleCycle();
-  });
+    runtimeStyles.forEach(style => style.remove());
+    runtimeStyles.length = 0;
+  };
 })();
+}
 
   function stopRuntime() {
     if (runtime.stopped) return;
     runtime.stopped = true;
+    stopTrafficSubsystem();
     cleanupDetail();
     detailObserver.disconnect();
     window.removeEventListener('message', onDetailMessage);
@@ -813,8 +840,12 @@ const domObserver = (() => {
     });
     if (decorationFrame !== null) cancelAnimationFrame(decorationFrame);
     decorationTimers.forEach(timer => clearTimeout(timer));
+    detailStyle.remove();
+    delete document.documentElement.dataset.nezhaopRuntime;
+    window.removeEventListener('beforeunload', stopRuntime);
+    if (window[RUNTIME_KEY] === runtime) delete window[RUNTIME_KEY];
   }
 
   runtime.stop = stopRuntime;
-  window.addEventListener('beforeunload', stopRuntime, { once: true });
+  window.addEventListener('beforeunload', stopRuntime);
 })();
