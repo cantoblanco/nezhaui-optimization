@@ -722,18 +722,19 @@ const trafficRenderer = (() => {
 const trafficDataManager = (() => {
   let trafficCache = null;
 
-  function fetchTrafficData(apiUrl, config, callback) {
+  function fetchTrafficData(apiUrl, config, request, callback) {
     const now = Date.now();
     if (trafficCache && (now - trafficCache.timestamp < config.interval)) {
       if (config.enableLog) console.log('[fetchTrafficData] 使用缓存数据');
-      callback(trafficCache.data);
+      if (request.isCurrent()) callback(trafficCache.data);
       return;
     }
 
     if (config.enableLog) console.log('[fetchTrafficData] 请求新数据...');
-    fetch(apiUrl)
+    fetch(apiUrl, request.signal ? { signal: request.signal } : undefined)
       .then(res => res.json())
       .then(data => {
+        if (!request.isCurrent()) return;
         if (!data || data.success === false) {
           if (config.enableLog) console.warn('[fetchTrafficData] 请求成功但数据异常');
           return;
@@ -744,6 +745,7 @@ const trafficDataManager = (() => {
         callback(trafficData);
       })
       .catch(err => {
+        if (!request.isCurrent() || err?.name === 'AbortError') return;
         if (config.enableLog) console.error('[fetchTrafficData] 请求失败:', err);
       });
   }
@@ -764,6 +766,12 @@ const domObserver = (() => {
       || Boolean(node.closest('[data-nezhaop-cycle-row]'));
   }
 
+  function containsScriptOwnedRow(node) {
+    if (node.nodeType !== Node.ELEMENT_NODE) return false;
+    return node.matches('[data-nezhaop-cycle-row]')
+      || Boolean(node.querySelector('[data-nezhaop-cycle-row]'));
+  }
+
   function requiresReconciliation(mutations) {
     return mutations.some(mutation => {
       if (mutation.type !== 'childList' || (!mutation.addedNodes.length && !mutation.removedNodes.length)) {
@@ -773,6 +781,7 @@ const domObserver = (() => {
           && mutation.target.closest('[data-nezhaop-cycle-row]')) {
         return false;
       }
+      if ([...mutation.removedNodes].some(containsScriptOwnedRow)) return true;
       const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
       return nodes.some(node => !isScriptOwnedNode(node));
     });
@@ -854,8 +863,23 @@ const domObserver = (() => {
     console.log('[TrafficScript] 最终配置如下:', config);
   }
 
+  let trafficStopped = false;
+  let trafficGeneration = 0;
+  let trafficAbortController = null;
+
   function updateTrafficStats() {
-    trafficDataManager.fetchTrafficData(config.apiUrl, config, trafficData => {
+    if (trafficStopped) return;
+    const generation = ++trafficGeneration;
+    if (trafficAbortController) trafficAbortController.abort();
+    trafficAbortController = typeof AbortController === 'function'
+      ? new AbortController()
+      : null;
+    const request = {
+      signal: trafficAbortController?.signal,
+      isCurrent: () => !trafficStopped && !runtime.stopped && generation === trafficGeneration
+    };
+    trafficDataManager.fetchTrafficData(config.apiUrl, config, request, trafficData => {
+      if (!request.isCurrent()) return;
       trafficRenderer.renderTrafficStats(trafficData, config);
     });
   }
@@ -906,10 +930,14 @@ const domObserver = (() => {
     }
   }, 100);
 
-  let trafficStopped = false;
   stopTrafficSubsystem = () => {
     if (trafficStopped) return;
     trafficStopped = true;
+    trafficGeneration += 1;
+    if (trafficAbortController) {
+      trafficAbortController.abort();
+      trafficAbortController = null;
+    }
     clearTimeout(configRefreshTimer);
     domObserver.disconnectAll(sectionDetector);
     stopPeriodicRefresh();

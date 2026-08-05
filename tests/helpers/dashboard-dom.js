@@ -63,7 +63,8 @@ function createDashboard(options = {}) {
     intervalLog = [],
     intervalCallbackLog = [],
     resizeLog = [],
-    fetchLog = []
+    fetchLog = [],
+    fetchOptionsLog = []
   } = options;
   const dom = new JSDOM(html || detailPage({ legacy, extraMarkup }), {
     url,
@@ -72,8 +73,9 @@ function createDashboard(options = {}) {
   });
   const { window } = dom;
 
-  window.fetch = async url => {
+  window.fetch = async (url, options) => {
     fetchLog.push(url);
+    fetchOptionsLog.push(options);
     const response = typeof fetchResponse === 'function'
       ? fetchResponse(url)
       : fetchResponse;

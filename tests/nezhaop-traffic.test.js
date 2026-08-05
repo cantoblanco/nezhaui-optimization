@@ -199,6 +199,118 @@ test('showTrafficStats=false removes an existing script-owned cycle row', async 
   assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row]').length, 0);
 });
 
+test('runtime.stop invalidates and aborts a delayed traffic request before it can render', async t => {
+  let resolveFetch;
+  const fetchOptionsLog = [];
+  const delayedResponse = new Promise(resolve => {
+    resolveFetch = resolve;
+  });
+  const dashboard = createTrafficDashboard({
+    lists: [{ layout: 'card', servers: ['card server'] }],
+    fetchResponse: () => delayedResponse,
+    fetchOptionsLog
+  });
+  t.after(() => dashboard.close());
+
+  dashboard.evaluate();
+  dashboard.window.__NEZHAOP_RUNTIME__.stop();
+  resolveFetch({
+    data: {
+      cycle_transfer_stats: {
+        delayed: {
+          server_name: { 1: 'card server' },
+          transfer: { 1: 50 },
+          max: 100,
+          from: '2026-05-01',
+          to: '2026-05-31'
+        }
+      }
+    }
+  });
+  await dashboard.settle();
+
+  assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row]').length, 0);
+  assert.equal(fetchOptionsLog.length, 1);
+  assert.equal(fetchOptionsLog[0].signal.aborted, true);
+});
+
+test('a newer traffic request generation cannot be overwritten by an older delayed response', async t => {
+  const resolvers = [];
+  const fetchOptionsLog = [];
+  const dashboard = createTrafficDashboard({
+    lists: [{ layout: 'card', servers: ['card server'] }],
+    fetchResponse: () => new Promise(resolve => resolvers.push(resolve)),
+    fetchOptionsLog
+  });
+  t.after(() => dashboard.close());
+
+  dashboard.evaluate();
+  assert.equal(resolvers.length, 1);
+  dashboard.document.querySelector('.server-heading-layout')
+    .append(dashboard.document.createElement('span'));
+  await dashboard.settle();
+  assert.equal(resolvers.length, 2);
+  assert.equal(fetchOptionsLog[0].signal.aborted, true);
+
+  const response = transfer => ({
+    data: {
+      cycle_transfer_stats: {
+        generation: {
+          server_name: { 1: 'card server' },
+          transfer: { 1: transfer },
+          max: 100,
+          from: '2026-06-01',
+          to: '2026-06-30'
+        }
+      }
+    }
+  });
+  resolvers[1](response(80));
+  await dashboard.settle();
+  const row = dashboard.document.querySelector('[data-nezhaop-cycle-row="1"]');
+  assert.equal(row.querySelector('[data-nezhaop-percent]').textContent, '80%');
+
+  resolvers[0](response(10));
+  await dashboard.settle();
+  assert.equal(dashboard.document.querySelector('[data-nezhaop-cycle-row="1"]'), row);
+  assert.equal(row.querySelector('[data-nezhaop-percent]').textContent, '80%');
+});
+
+test('an externally removed managed row is restored once without a fetch storm', async t => {
+  const fetchLog = [];
+  const dashboard = createTrafficDashboard({
+    lists: [{ layout: 'card', servers: ['card server'] }],
+    trafficData: {
+      cycle: {
+        server_name: { 1: 'card server' },
+        transfer: { 1: 25 },
+        max: 100,
+        from: '2026-07-01',
+        to: '2026-07-31'
+      }
+    },
+    fetchLog
+  });
+  t.after(() => dashboard.close());
+  let now = 0;
+  dashboard.window.Date.now = () => (now += 700000);
+
+  dashboard.evaluate();
+  await dashboard.settle();
+  const removedRow = dashboard.document.querySelector('[data-nezhaop-cycle-row="1"]');
+  const fetchCount = fetchLog.length;
+  removedRow.remove();
+  await dashboard.settle(50);
+
+  const rows = dashboard.document.querySelectorAll('[data-nezhaop-cycle-row="1"]');
+  assert.equal(rows.length, 1);
+  assert.notEqual(rows[0], removedRow);
+  assert.equal(fetchLog.length - fetchCount, 1);
+  await dashboard.settle(50);
+  assert.equal(fetchLog.length - fetchCount, 1, 'restoring the script-owned row does not retrigger reconciliation');
+  assert.equal(dashboard.document.querySelectorAll('[data-nezhaop-cycle-row="1"]').length, 1);
+});
+
 test('embedded detail mode starts no traffic fetches, intervals, or list observers', async t => {
   const fetchLog = [];
   const intervalLog = [];
